@@ -148,19 +148,22 @@ type RequestVoteReply struct {
 //
 // example RequestVote RPC handler.
 //
-func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
+func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here.
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	// TODO: reset timer(done but not sure)
 	if rf.state == FOLLOWER {
-		rf.timer.Reset(getRandomTimeout())
+		rf.timer = time.NewTimer(getRandomTimeout())
 	}
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
 		DPrintf("[RequestVote] server[%d] rejects voting to server[%d](candidate). Candidate term < server[%d] currentTerm", rf.me, args.CandidateId, rf.me)
 	} else {
+		if args.Term > rf.currentTerm {
+			rf.votedFor = -1
+		}
 		lastLogIndex := len(rf.logs) - 1
 		var lastLogTerm int
 		if lastLogIndex < 0 {
@@ -211,7 +214,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
 //
-func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *RequestVoteReply) bool {
+func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	if ok {
 		DPrintf("[sendRequestVote] server[%d](candidate) receives reply from server[%d]. Result is %t", rf.me, server, reply.VoteGranted)
@@ -315,12 +318,11 @@ func getRandomTimeout() time.Duration {
 
 func (rf *Raft) loopAsFollower()  {
 	for rf.state == FOLLOWER {
-		DPrintf("follower me: %d", rf.me)
 		select {
 		case reset := <-rf.resetTimer:
 			if reset {
 				DPrintf("[loopAsFollower] server[%d] resets timer.", rf.me)
-				rf.timer.Reset(getRandomTimeout())
+				rf.timer = time.NewTimer(getRandomTimeout())
 			}
 		case <-rf.timer.C: // election timeout, become candidate
 			rf.state = CANDIDATE
@@ -337,11 +339,11 @@ func (rf *Raft) loopAsCandidate() {
 		rf.votedFor = rf.me // Vote for self
 		rf.voteCount = 1
 		DPrintf("[loopAsCandidate] server[%d] becomes candidate. Current term: %d", rf.me, rf.currentTerm)
-		rf.timer.Reset(getRandomTimeout()) // Reset election timer
+		rf.timer = time.NewTimer(getRandomTimeout()) // Reset election timer
 		// Send RequestVote RPCs to all other servers
 		for i := 0; i < len(rf.peers); i++ {
 			if i != rf.me {
-				args := RequestVoteArgs{}
+				args := &RequestVoteArgs{}
 				args.Term = rf.currentTerm
 				args.CandidateId = rf.me
 				// TODO: lastLogIndex & lastLogTerm
@@ -364,12 +366,11 @@ func (rf *Raft) loopAsCandidate() {
 
 func (rf *Raft) loopAsLeader() {
 	for rf.state == LEADER {
-		DPrintf("leader me: %d", rf.me)
 		rf.mu.Lock()
 		// Send AppendEntries RPCs to all other server
 		for i := 0; i < len(rf.peers); i++ {
 			if i != rf.me {
-				args := AppendEntriesArgs{}
+				args := &AppendEntriesArgs{}
 				args.Term = rf.currentTerm
 				args.LeaderID = rf.me
 				args.LeaderCommit = rf.commitIndex
@@ -377,20 +378,16 @@ func (rf *Raft) loopAsLeader() {
 				args.PrevLogIndex = -1
 				args.PrevLogTerm = -1
 				reply := &AppendEntriesReply{}
-				DPrintf("[loopAsLeader] server[%d](leader) sends append entries to server[%d].", rf.me, i)
+				DPrintf("[loopAsLeader] server[%d](leader) sends append entries to server[%d]. Leader term: %d", rf.me, i, rf.currentTerm)
 				go rf.sendAppendEntries(i, args, reply)
 			}
 		}
 		rf.mu.Unlock()
-		//timer := time.NewTimer(time.Duration(HeartbeatTimeout) * time.Millisecond)
-		//<-timer.C
-		rf.timer.Reset(time.Duration(HeartbeatTimeout) * time.Millisecond)
-		<-rf.timer.C
-		//select {
-		//case <-rf.timer.C: // heartbeat timeout, send append entries
-		//	fmt.Println("leader reset")
-		//	continue
-		//}
+		rf.timer = time.NewTimer(time.Duration(HeartbeatTimeout) * time.Millisecond)
+		select {
+		case <-rf.timer.C: // heartbeat timeout, send append entries
+			DPrintf("[loopAsLeader] heartbeat timeout. server[%d](leader) resets timer.", rf.me)
+		}
 	}
 }
 
@@ -398,7 +395,7 @@ func (rf *Raft) convert2Follower()  {
 	if rf.state != FOLLOWER {
 		DPrintf("[convert2Follower] server[%d] converts to follower.", rf.me)
 		rf.state = FOLLOWER
-		rf.timer.Reset(getRandomTimeout())
+		rf.timer = time.NewTimer(getRandomTimeout())
 		rf.voteCount = 0
 		rf.votedFor = -1
 		go rf.loopAsFollower()
@@ -410,7 +407,7 @@ type AppendEntriesArgs struct {
 	LeaderID		int
 	PrevLogIndex	int
 	PrevLogTerm		int
-	Entries			[]LogEntry
+	//Entries			[]LogEntry
 	LeaderCommit	int
 }
 
@@ -425,7 +422,7 @@ type LogEntry struct {
 }
 
 // AppendEntries RPC handler.
-func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	if args.Term < rf.currentTerm { // Reply false if term < currentTerm
@@ -435,30 +432,38 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 		return
 	}
 	// TODO: log replication
+	if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
+		rf.convert2Follower()
+	}
 	reply.Term = rf.currentTerm
 	reply.Success = true
 	rf.resetTimer <- true
 	DPrintf("[AppendEntries] server[%d] replies success append entries to server[%d](leader).", rf.me, args.LeaderID)
 }
 
-func (rf *Raft) sendAppendEntries(server int, args AppendEntriesArgs, reply *AppendEntriesReply) bool {
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	if ok {
-		DPrintf("[sendAppendEntries] server[%d](leader) receives reply from server[%d]. Result is %t", rf.me, server, reply.Success)
 		rf.mu.Lock()
-		defer rf.mu.Unlock()
+		DPrintf("[sendAppendEntries] server[%d](leader) receives reply from server[%d]. Result is %t", rf.me, server, reply.Success)
 		if rf.state == LEADER {
 			if reply.Success {
 				// TODO
 			} else {
 				if rf.currentTerm < reply.Term { // If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower
+					DPrintf("[sendAppendEntries] server[%d](old leader) updates current term %d to reply term %d from server[%d].", rf.me, rf.currentTerm, reply.Term, server)
 					rf.currentTerm = reply.Term
 					rf.convert2Follower()
 				}
 			}
 		}
+		rf.mu.Unlock()
 	} else {
 		DPrintf("[sendAppendEntries] server[%d](leader) cannot receive from server[%d].", rf.me, server)
 	}
 	return ok
 }
+
+
+// 发现Call函数，如果network断了会被阻塞(实际上是设置了一个比较长的delay时间)
