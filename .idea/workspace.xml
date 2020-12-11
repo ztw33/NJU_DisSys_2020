@@ -95,7 +95,7 @@
     <property name="go.import.settings.migrated" value="true" />
     <property name="last_opened_file_path" value="$PROJECT_DIR$" />
     <property name="nodejs_package_manager_path" value="npm" />
-    <property name="settings.editor.selected.configurable" value="go.sdk" />
+    <property name="settings.editor.selected.configurable" value="com.goide.configuration.GoLibrariesConfigurableProvider" />
   </component>
   <component name="RunManager">
     <configuration default="true" type="Applet" factoryName="Applet">
@@ -150,7 +150,7 @@
       <option name="presentableId" value="Default" />
       <updated>1508750596625</updated>
       <workItem from="1607255952488" duration="11857000" />
-      <workItem from="1607413152914" duration="58276000" />
+      <workItem from="1607413152914" duration="82221000" />
     </task>
     <servers />
   </component>
