@@ -153,18 +153,18 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here.
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	// TODO: reset timer(done but not sure)
-	if rf.state == FOLLOWER {
-		rf.resetTimerCh <- true
+
+	if args.Term > rf.currentTerm { // If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower
+		DPrintf("[RequestVote] server[%d] updates current term %d to server[%d](candidate)'s term %d.", rf.me, rf.currentTerm, args.CandidateId, args.Term)
+		rf.currentTerm = args.Term
+		rf.votedFor = -1
+		rf.convert2Follower()
 	}
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
 		DPrintf("[RequestVote] server[%d] rejects voting to server[%d](candidate). Candidate term < server[%d] currentTerm", rf.me, args.CandidateId, rf.me)
 	} else {
-		if args.Term > rf.currentTerm {
-			rf.votedFor = -1
-		}
 		lastLogIndex := len(rf.logs) - 1
 		var lastLogTerm int
 		if lastLogIndex < 0 {
@@ -178,7 +178,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			reply.VoteGranted = true
 			rf.votedFor = args.CandidateId
 			DPrintf("[RequestVote] server[%d] votes to server[%d](candidate).", rf.me, args.CandidateId)
-			// TODO: 什么时候更新[done:rf的term]以及log？
+			rf.resetTimerCh <- true // NOTICE: reset timer only when voting granted
 		} else {
 			reply.Term = rf.currentTerm
 			reply.VoteGranted = false
@@ -188,11 +188,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			if !(args.LastLogTerm >= lastLogTerm && args.LastLogIndex >= lastLogIndex) {
 				DPrintf("[RequestVote] server[%d] rejects voting to server[%d](candidate). Candidate's log is not as up-to-date as receiver's log.", rf.me, args.CandidateId)
 			}
-		}
-		if args.Term > rf.currentTerm { // If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower
-			DPrintf("[RequestVote] server[%d] updates current term %d to server[%d](candidate)'s term %d.", rf.me, rf.currentTerm, args.CandidateId, args.Term)
-			rf.currentTerm = args.Term
-			rf.convert2Follower()
 		}
 	}
 }
@@ -416,11 +411,16 @@ func (rf *Raft) loopAsLeader() {
 				}
 			}
 		}
+		if rf.state == LEADER {
+			rf.timer = time.NewTimer(time.Duration(HeartbeatTimeout) * time.Millisecond)
+			DPrintf("[loopAsLeader] server[%d](leader) resets timer.", rf.me)
+		}
 		rf.mu.Unlock()
-		rf.timer = time.NewTimer(time.Duration(HeartbeatTimeout) * time.Millisecond)
-		select {
-		case <-rf.timer.C: // heartbeat timeout, send append entries
-			DPrintf("[loopAsLeader] heartbeat timeout. server[%d](leader) resets timer.", rf.me)
+		if rf.state == LEADER {
+			select {
+			case <-rf.timer.C: // heartbeat timeout, send append entries
+				DPrintf("[loopAsLeader] server[%d](leader) heartbeat timeout.", rf.me)
+			}
 		}
 	}
 }
@@ -484,15 +484,20 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.currentTerm = args.Term
 		rf.convert2Follower()
 	}
+	if rf.state == CANDIDATE { // for candidate, if AppendEntries RPC received from new leader, convert to follower
+		rf.convert2Follower()
+	}
 	if args.PrevLogIndex < 0 || args.PrevLogIndex >= len(rf.logs) || rf.logs[args.PrevLogIndex].Term != args.PrevLogTerm {
 		// Reply false if log does not contain an entry at prevLogIndex whose term matches prevLogTerm
 		reply.Term = rf.currentTerm
 		reply.Success = false
+		rf.resetTimerCh <- true // TODO: not sure(reset timer的时机？reply true和false分别需要reset timer吗)
 		DPrintf("[AppendEntries] server[%d] replies fail append entries to server[%d](leader). Terms mismatch.", rf.me, args.LeaderID)
 		return
 	}
 	// If an existing entry conflicts with a new one (same index but different terms), delete the existing entry and all that follow it
 	if args.PrevLogIndex + 1 < len(rf.logs) {
+		DPrintf("[AppendEntries] server[%d]'s entry conflicts with a new one. previous logs: %v, current logs: %v", rf.me, rf.logs, rf.logs[:args.PrevLogIndex + 1])
 		rf.logs = rf.logs[:args.PrevLogIndex + 1]
 	}
 	// Append any new entries not already in the log
@@ -504,11 +509,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		} else {
 			rf.commitIndex = len(rf.logs) - 1
 		}
+		DPrintf("[AppendEntries] server[%d] set commitIndex to %d.", rf.me, rf.commitIndex)
 	}
 
 	reply.Term = rf.currentTerm
 	reply.Success = true
-	rf.resetTimerCh <- true
+	rf.resetTimerCh <- true // TODO: not sure(reset timer的时机？reply true和false分别需要reset timer吗)
 	DPrintf("[AppendEntries] server[%d] replies success append entries to server[%d](leader). logs: %v", rf.me, args.LeaderID, rf.logs)
 }
 
