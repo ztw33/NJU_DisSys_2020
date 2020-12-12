@@ -2,8 +2,6 @@
 <project version="4">
   <component name="ChangeListManager">
     <list default="true" id="558ac743-39b1-4d9c-ab46-81873a9bc231" name="Default" comment="">
-      <change beforePath="$PROJECT_DIR$/.idea/NJU-DisSys-2017.iml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/NJU-DisSys-2020.iml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/modules.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/modules.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/raft/raft.go" beforeDir="false" afterPath="$PROJECT_DIR$/src/raft/raft.go" afterDir="false" />
     </list>
@@ -153,7 +151,7 @@
       <updated>1508750596625</updated>
       <workItem from="1607255952488" duration="11857000" />
       <workItem from="1607413152914" duration="82221000" />
-      <workItem from="1607702498289" duration="10256000" />
+      <workItem from="1607702498289" duration="15613000" />
     </task>
     <servers />
   </component>

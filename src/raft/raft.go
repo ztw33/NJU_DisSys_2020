@@ -18,6 +18,8 @@ package raft
 //
 
 import (
+	"bytes"
+	"encoding/gob"
 	"math/rand"
 	"sync"
 	"time"
@@ -109,6 +111,14 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
+
+	w := new(bytes.Buffer)
+	e := gob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.logs)
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
 }
 
 //
@@ -121,6 +131,12 @@ func (rf *Raft) readPersist(data []byte) {
 	// d := gob.NewDecoder(r)
 	// d.Decode(&rf.xxx)
 	// d.Decode(&rf.yyy)
+
+	r := bytes.NewBuffer(data)
+	d := gob.NewDecoder(r)
+	d.Decode(&rf.currentTerm)
+	d.Decode(&rf.votedFor)
+	d.Decode(&rf.logs)
 }
 
 
@@ -158,6 +174,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		DPrintf("[RequestVote] server[%d] updates current term %d to server[%d](candidate)'s term %d.", rf.me, rf.currentTerm, args.CandidateId, args.Term)
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
+		rf.persist()
 		rf.convert2Follower()
 	}
 	if args.Term < rf.currentTerm {
@@ -177,6 +194,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			reply.Term = rf.currentTerm
 			reply.VoteGranted = true
 			rf.votedFor = args.CandidateId
+			rf.persist()
 			DPrintf("[RequestVote] server[%d] votes to server[%d](candidate).", rf.me, args.CandidateId)
 			rf.resetTimerCh <- true // NOTICE: reset timer only when voting granted
 		} else {
@@ -221,6 +239,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	if ok && rf.state == CANDIDATE {
 		if rf.currentTerm < reply.Term { // If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower
 			rf.currentTerm = reply.Term
+			rf.persist()
 			rf.convert2Follower()
 		} else {
 			if reply.VoteGranted {
@@ -264,6 +283,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			Term:    term,
 			Command: command,
 		})
+		rf.persist()
 		//rf.nextIndex[rf.me] = len(rf.logs)
 		//rf.matchIndex[rf.me] = rf.nextIndex[rf.me] - 1
 		index = len(rf.logs) - 1
@@ -351,6 +371,7 @@ func (rf *Raft) loopAsCandidate() {
 		rf.currentTerm++ // Increment currentTerm
 		rf.votedFor = rf.me // Vote for self
 		rf.voteCount = 1
+		rf.persist()
 		DPrintf("[loopAsCandidate] server[%d] becomes candidate. Current term: %d", rf.me, rf.currentTerm)
 		rf.timer = time.NewTimer(getRandomTimeout()) // Reset election timer
 		// Send RequestVote RPCs to all other servers
@@ -379,7 +400,6 @@ func (rf *Raft) loopAsCandidate() {
 func (rf *Raft) loopAsLeader() {
 	for rf.state == LEADER {
 		rf.applyMsg()
-		// TODO: 一致性
 		rf.mu.Lock()
 		// Send AppendEntries RPCs to all other server
 		for i := 0; i < len(rf.peers); i++ {
@@ -432,6 +452,7 @@ func (rf *Raft) convert2Follower()  {
 		rf.timer = time.NewTimer(getRandomTimeout())
 		rf.voteCount = 0
 		rf.votedFor = -1
+		rf.persist()
 		go rf.loopAsFollower()
 	}
 }
@@ -482,6 +503,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 	if args.Term > rf.currentTerm { // If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower
 		rf.currentTerm = args.Term
+		rf.persist()
 		rf.convert2Follower()
 	}
 	if rf.state == CANDIDATE { // for candidate, if AppendEntries RPC received from new leader, convert to follower
@@ -491,7 +513,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// Reply false if log does not contain an entry at prevLogIndex whose term matches prevLogTerm
 		reply.Term = rf.currentTerm
 		reply.Success = false
-		rf.resetTimerCh <- true // TODO: not sure(reset timer的时机？reply true和false分别需要reset timer吗)
+		rf.resetTimerCh <- true
 		DPrintf("[AppendEntries] server[%d] replies fail append entries to server[%d](leader). Terms mismatch.", rf.me, args.LeaderID)
 		return
 	}
@@ -502,6 +524,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 	// Append any new entries not already in the log
 	rf.logs = append(rf.logs, args.Entries...)
+	rf.persist()
 	// If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 	if args.LeaderCommit > rf.commitIndex {
 		if args.LeaderCommit < len(rf.logs) - 1 {
@@ -514,7 +537,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	reply.Term = rf.currentTerm
 	reply.Success = true
-	rf.resetTimerCh <- true // TODO: not sure(reset timer的时机？reply true和false分别需要reset timer吗)
+	rf.resetTimerCh <- true
 	DPrintf("[AppendEntries] server[%d] replies success append entries to server[%d](leader). logs: %v", rf.me, args.LeaderID, rf.logs)
 }
 
@@ -525,13 +548,13 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		DPrintf("[sendAppendEntries] server[%d](leader) receives reply from server[%d]. Result is %t", rf.me, server, reply.Success)
 		if rf.state == LEADER {
 			if reply.Success {
-				// TODO: update nextIndex and matchIndex for follower (not sure)
 				rf.nextIndex[server] = args.PrevLogIndex + len(args.Entries) + 1
 				rf.matchIndex[server] = rf.nextIndex[server] - 1
 			} else {
 				if rf.currentTerm < reply.Term { // If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower
 					DPrintf("[sendAppendEntries] server[%d](old leader) updates current term %d to reply term %d from server[%d].", rf.me, rf.currentTerm, reply.Term, server)
 					rf.currentTerm = reply.Term
+					rf.persist()
 					rf.convert2Follower()
 				} else {
 					// If AppendEntries fails because of log inconsistency: decrement nextIndex and retry
@@ -557,4 +580,8 @@ func (rf *Raft) applyMsg() {
 	}
 }
 
-// 发现Call函数，如果network断了会被阻塞(实际上是设置了一个比较长的delay时间)
+
+// 一些踩过的坑：
+// 发现Call函数，如果network断了会被阻塞(实际上是设置了一个比较长的delay时间，而且是随机的)，不用去管什么时候从Call返回，返回时ok也是false
+// 在RV和AE中reset timer的时机需要仔细考虑，目前观察是，RV中仅voteGranted为true时才reset timer; AE中仅reply success及reply false但因为term mismatch的情况下才reset timer
+// logs里必须先插入一个empty log, index从1开始，因为框架代码中会根据这个来判断是否reach an agreement
