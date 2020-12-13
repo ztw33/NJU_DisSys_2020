@@ -158,8 +158,8 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here.
-	Term	int
-	VoteGranted	bool
+	Term			int
+	VoteGranted		bool
 }
 
 //
@@ -349,7 +349,7 @@ func getRandomTimeout() time.Duration {
 
 func (rf *Raft) loopAsFollower()  {
 	for rf.state == FOLLOWER {
-		rf.applyMsg()
+		go rf.applyMsg()
 		select {
 		case reset := <-rf.resetTimerCh:
 			if reset {
@@ -366,7 +366,7 @@ func (rf *Raft) loopAsFollower()  {
 
 func (rf *Raft) loopAsCandidate() {
 	for rf.state == CANDIDATE {
-		rf.applyMsg()
+		go rf.applyMsg()
 		rf.mu.Lock()
 		rf.currentTerm++ // Increment currentTerm
 		rf.votedFor = rf.me // Vote for self
@@ -399,7 +399,7 @@ func (rf *Raft) loopAsCandidate() {
 
 func (rf *Raft) loopAsLeader() {
 	for rf.state == LEADER {
-		rf.applyMsg()
+		go rf.applyMsg()
 		rf.mu.Lock()
 		// Send AppendEntries RPCs to all other server
 		for i := 0; i < len(rf.peers); i++ {
@@ -418,7 +418,7 @@ func (rf *Raft) loopAsLeader() {
 		}
 		// If there exists an N such that N > commitIndex, a majority of matchIndex[i] ≥ N, and logs[N].term == currentTerm: set commitIndex = N
 		for N := len(rf.logs) - 1; N > rf.commitIndex; N-- {
-			if rf.logs[N].Term == rf.currentTerm {
+			if rf.logs[N].Term == rf.currentTerm { // Figure 8
 				count := 1
 				for i := 0; i < len(rf.peers); i++ {
 					if i != rf.me && rf.matchIndex[i] >= N {
@@ -426,6 +426,7 @@ func (rf *Raft) loopAsLeader() {
 					}
 				}
 				if count > len(rf.peers) / 2 {
+					DPrintf("[loopAsLeader] server[%d](leader) ", rf.me)
 					rf.commitIndex = N
 					break
 				}
@@ -484,6 +485,7 @@ type AppendEntriesArgs struct {
 type AppendEntriesReply struct {
 	Term		int
 	Success		bool
+	NextIndex	int // lab3: optimize
 }
 
 type LogEntry struct {
@@ -498,10 +500,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.Term < rf.currentTerm { // Reply false if term < currentTerm
 		reply.Term = rf.currentTerm
 		reply.Success = false
+		reply.NextIndex = args.PrevLogIndex + 1
 		DPrintf("[AppendEntries] server[%d] replies fail append entries to server[%d](leader). Leader's term < currentTerm", rf.me, args.LeaderID)
 		return
 	}
 	if args.Term > rf.currentTerm { // If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower
+		DPrintf("[AppendEntries] server[%d] updates current term %d to server[%d](leader)'s term %d.", rf.me, rf.currentTerm, args.Term)
 		rf.currentTerm = args.Term
 		rf.persist()
 		rf.convert2Follower()
@@ -514,6 +518,18 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Term = rf.currentTerm
 		reply.Success = false
 		rf.resetTimerCh <- true
+		// lab3: optimize
+		if args.PrevLogIndex >= len(rf.logs) {
+			reply.NextIndex = len(rf.logs)
+		} else if rf.logs[args.PrevLogIndex].Term != args.PrevLogTerm {
+			conflictTerm := rf.logs[args.PrevLogIndex].Term
+			firstIndex := args.PrevLogIndex
+			for firstIndex > 0 && rf.logs[firstIndex].Term == conflictTerm {
+				firstIndex--
+			}
+			reply.NextIndex = firstIndex + 1
+		}
+
 		DPrintf("[AppendEntries] server[%d] replies fail append entries to server[%d](leader). Terms mismatch.", rf.me, args.LeaderID)
 		return
 	}
@@ -537,6 +553,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	reply.Term = rf.currentTerm
 	reply.Success = true
+	reply.NextIndex = len(rf.logs)
 	rf.resetTimerCh <- true
 	DPrintf("[AppendEntries] server[%d] replies success append entries to server[%d](leader). logs: %v", rf.me, args.LeaderID, rf.logs)
 }
@@ -548,7 +565,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		DPrintf("[sendAppendEntries] server[%d](leader) receives reply from server[%d]. Result is %t", rf.me, server, reply.Success)
 		if rf.state == LEADER {
 			if reply.Success {
-				rf.nextIndex[server] = args.PrevLogIndex + len(args.Entries) + 1
+				rf.nextIndex[server] = reply.NextIndex
 				rf.matchIndex[server] = rf.nextIndex[server] - 1
 			} else {
 				if rf.currentTerm < reply.Term { // If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower
@@ -558,7 +575,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 					rf.convert2Follower()
 				} else {
 					// If AppendEntries fails because of log inconsistency: decrement nextIndex and retry
-					rf.nextIndex[server]--
+					rf.nextIndex[server] = reply.NextIndex
 				}
 			}
 		}
@@ -585,3 +602,6 @@ func (rf *Raft) applyMsg() {
 // 发现Call函数，如果network断了会被阻塞(实际上是设置了一个比较长的delay时间，而且是随机的)，不用去管什么时候从Call返回，返回时ok也是false
 // 在RV和AE中reset timer的时机需要仔细考虑，目前观察是，RV中仅voteGranted为true时才reset timer; AE中仅reply success及reply false但因为term mismatch的情况下才reset timer
 // logs里必须先插入一个empty log, index从1开始，因为框架代码中会根据这个来判断是否reach an agreement
+
+// 关于assignment3中unreliable相关test的解读：模拟网络很不稳定的情况，经常有节点断联。因此，需要使用针对更新nextIndex的优化，在一次心跳包
+// 的返回中直接更新到相应位置。否则仅使用每次将nextIndex减1的未优化方法在网络不稳定经常丢包的情况下很难得完成同步。
