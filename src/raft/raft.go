@@ -320,7 +320,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.votedFor = -1
 	rf.state = FOLLOWER
 	rf.timer = time.NewTimer(getRandomTimeout())
-	rf.resetTimerCh = make(chan  bool)
+	rf.resetTimerCh = make(chan bool, 5)
 	rf.commitIndex = 0
 	rf.voteCount = 0
 	rf.lastApplied = 0
@@ -352,7 +352,7 @@ func (rf *Raft) loopAsFollower()  {
 		case <-rf.timer.C: // election timeout, become candidate
 			rf.mu.Lock()
 			rf.state = CANDIDATE
-			rf.resetTimerCh = make(chan bool) // TODO: not sure
+			rf.resetTimerCh = make(chan bool, 5)
 			rf.mu.Unlock()
 			go rf.loopAsCandidate()
 		}
@@ -475,7 +475,7 @@ func (rf *Raft) convert2Follower()  {
 		rf.timer = time.NewTimer(getRandomTimeout())
 		rf.voteCount = 0
 		rf.votedFor = -1
-		rf.resetTimerCh = make(chan bool)
+		rf.resetTimerCh = make(chan bool, 5)
 		rf.persist()
 		go rf.loopAsFollower()
 	}
@@ -549,17 +549,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		DPrintf("[AppendEntries] server[%d] replies fail append entries to server[%d](leader). Leader's term < currentTerm", rf.me, args.LeaderID)
 		return
 	}
-	//if args.Term > rf.currentTerm { // If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower
-	//	DPrintf("[AppendEntries] server[%d] updates current term %d to server[%d](leader)'s term %d.", rf.me, rf.currentTerm, args.LeaderID, args.Term)
-	//	rf.currentTerm = args.Term
-	//	rf.votedFor = -1 // 遗漏
-	//	rf.persist()
-	//	rf.convert2Follower()
-	//}
-	//// for candidate, if AppendEntries RPC received from new leader, convert to follower
-	//if rf.state == CANDIDATE && args.Term == rf.currentTerm { // NOTICE: "&& args.Term == rf.currentTerm"
-	//	rf.convert2Follower()
-	//}
+
 	if args.PrevLogIndex < 0 || args.PrevLogIndex >= len(rf.logs) || rf.logs[args.PrevLogIndex].Term != args.PrevLogTerm {
 		// Reply false if log does not contain an entry at prevLogIndex whose term matches prevLogTerm
 		reply.Term = rf.currentTerm
